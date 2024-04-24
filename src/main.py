@@ -1,3 +1,4 @@
+import argparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
@@ -18,12 +19,6 @@ from ultralytics import YOLO
 import json
 from typing import Optional, Union
 
-
-PG_HOST = os.environ.get("PG_HOST") or "localhost"
-PG_PORT = os.environ.get("PG_PORT") or "5432"
-PG_USER = os.environ.get("PG_USER") or "pgvector"
-PG_PASSWORD = os.environ.get("PG_PASSWORD") or "pgvector"
-PG_DEFAULT_DBNAME = os.environ.get("PG_DEFAULT_DBNAME") or "postgres"
 MODELS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
 
 model = None
@@ -31,6 +26,7 @@ transforms = None
 face_model = None
 img_child_model = None
 face_resnet = None
+conn = None
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"device is {device}")
 
@@ -62,8 +58,23 @@ def init_model():
     transforms = timm.data.create_transform(**data_config, is_training=False)
 
 
-def insert(table: str, embedding, data: dict):
+def connect_db(PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DEFAULT_DBNAME):
+    global conn
+    conn = psycopg.connect(
+        dbname=PG_DEFAULT_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        autocommit=True,
+    )
 
+    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    register_vector(conn)
+
+
+def insert(table: str, embedding, data: dict):
+    global conn
     fields = ", ".join(data.keys())
     placeholders = ", ".join(["%s"] * len(data))
 
@@ -88,7 +99,7 @@ def insert(table: str, embedding, data: dict):
 
 
 def query(table: str, embedding, filter: str, limit: int = 5):
-
+    global conn
     if filter is not None:
         filter = "where " + filter
     else:
@@ -128,23 +139,6 @@ def extract_face_embedding(img: Image):
     return face_embedding
 
 
-conn = psycopg.connect(
-    dbname=PG_DEFAULT_DBNAME,
-    host=PG_HOST,
-    port=PG_PORT,
-    user=PG_USER,
-    password=PG_PASSWORD,
-    autocommit=True,
-)
-
-conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-register_vector(conn)
-
-# conn.execute("DROP TABLE IF EXISTS documents")
-# conn.execute(
-#     "CREATE TABLE documents (id bigserial PRIMARY KEY, content text, embedding vector(384))"
-# )
-
 app = FastAPI()
 
 
@@ -160,11 +154,12 @@ class SearchInput(BaseModel):
 
 @app.post(
     "/collection/",
-    summary="创建集合",
-    description="默认创建 embedding, bbox 字段,请勿在columns中重复创建",
+    summary="create collection",
+    description="Default creation of [embedding, bbox] fields, Please do not recreate duplicates in columns.",
 )
 async def create_collection(input: Collection):
     global model
+    global conn
     try:
         columns = ""
         for key in input.columns:
@@ -190,8 +185,12 @@ async def create_collection(input: Collection):
         )
 
 
-@app.delete("/collection/")
+@app.delete(
+    "/collection/",
+    summary="delete collection",
+)
 async def delete_collection(collection: str):
+    global conn
     try:
         conn.execute(f"DROP TABLE IF EXISTS {collection}")
         return JSONResponse(status_code=200, content=None)
@@ -204,10 +203,11 @@ async def delete_collection(collection: str):
 
 @app.get(
     "/collection/",
-    summary="获取所有集合信息",
+    summary="get all collection",
 )
 async def get_collection():
     global model
+    global conn
     try:
         query = f"SELECT table_name,column_name, udt_name FROM information_schema.columns where table_schema = 'public'"
         rows = conn.execute(query).fetchall()
@@ -235,8 +235,8 @@ async def get_collection():
 
 @app.post(
     "/collection/{collection}/upload",
-    summary="上传图片入库",
-    description="图片特征提取并入库 mode 只支持 留空, face, child | input 字段为json对应存入的字段信息{'a':1,'b':'xx'}",
+    summary="upload",
+    description="input 字段为json对应存入的字段信息{'a':1,'b':'xx'}",
 )
 async def upload(
     collection: str,
@@ -318,11 +318,12 @@ async def upload(
 
 @app.delete(
     "/collection/{collection}",
-    summary="获取集合记录",
+    summary="delete row",
 )
-async def delete(collection: str, id: str):
+async def delete(collection: str, id: int):
+    global conn
     try:
-        conn.execute(f"DELETE from {collection} where id = '{id}'")
+        conn.execute(f"DELETE from {collection} where id = {id}")
         return JSONResponse(status_code=200, content=None)
     except Exception as e:
         return JSONResponse(
@@ -333,8 +334,8 @@ async def delete(collection: str, id: str):
 
 @app.post(
     "/collection/{collection}/search",
-    summary="检索图片",
-    description="mode 只支持 留空, face, child",
+    summary="search image",
+    description="mode only null, face, child",
 )
 async def search(
     collection: str,
@@ -422,6 +423,7 @@ async def get(
     skip: int = 0,
     limit: Optional[int] = 5,
 ):
+    global conn
     try:
         if filter is not None:
             filter = "where " + filter
@@ -447,43 +449,37 @@ async def get(
         )
 
 
-# # 读取资源
-# @app.get("/items/{item_id}")
-# async def read_item(item_id: int):
-#     global db
-#     if item_id not in db:
-#         raise HTTPException(status_code=404, detail="Item not found")
-#     return db[item_id]
-
-
-# # 更新资源
-# @app.put("/items/{item_id}")
-# async def update_item(item_id: int, item: Item):
-#     global db
-#     if item_id not in db:
-#         raise HTTPException(status_code=404, detail="Item not found")
-#     db[item_id] = item.dict()
-#     return {"message": "Item updated successfully"}
-
-
-# # 删除资源
-# @app.delete("/items/{item_id}")
-# async def delete_item(item_id: int):
-#     global db
-#     if item_id not in db:
-#         raise HTTPException(status_code=404, detail="Item not found")
-#     del db[item_id]
-#     return {"message": "Item deleted successfully"}
-
-
 if __name__ == "__main__":
-    # 配置主机和端口
-    init_model()
-    # results = img_child_model("302128C47231214010-0013.jpg")
-    # for result in results:
-    #     boxes = result.boxes  # Boxes object for bounding box outputs
-    #     v = len(boxes)
-    #     for box in boxes:
-    #         print(box.xywh[0].cpu().numpy())
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+    )
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--pg_host", type=str, default=(os.environ.get("PG_HOST", "localhost"))
+    )
+    parser.add_argument(
+        "--pg_port", type=int, default=(int(os.environ.get("PG_PORT", 5432)))
+    )
+    parser.add_argument(
+        "--pg_user", type=str, default=os.environ.get("PG_USER", "pgvector")
+    )
+    parser.add_argument(
+        "--pg_password", type=str, default=os.environ.get("PG_PASSWORD", "pgvector")
+    )
+    parser.add_argument(
+        "--pg_dbname", type=str, default=os.environ.get("PG_DEFAULT_DBNAME", "postgres")
+    )
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    args = parser.parse_args()
+
+    PG_HOST = args.pg_host
+    PG_PORT = args.pg_port
+    PG_USER = args.pg_user
+    PG_PASSWORD = args.pg_password
+    PG_DEFAULT_DBNAME = args.pg_dbname
+    connect_db(PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DEFAULT_DBNAME)
+    init_model()
+    uvicorn.run(app, host=args.host, port=args.port)
