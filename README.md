@@ -1,5 +1,10 @@
 # 图片搜索服务
 
+使用提取图片特征向量(repvgg_b2模型维度2560)对图片进行特征提取并存入pgvector数据库
+- 支持人面入库和检索(使用facenet维度为512)
+- 子图检索(repvgg_b2模型维度2560)
+- 通用图片检索,最相似的图片检索(repvgg_b2模型维度2560)
+
 ## 安装环境
 ```
 pip install -r requirements.txt
