@@ -1,7 +1,12 @@
 # 图片搜索服务
 
+## 安装环境
+```
+pip install -r requirements.txt
+
+```
 ## 运行服务
-```sh
+```
 python src/main.py --host "127.0.0.1" --port 8000 --pg_host localhost --pg_port 5432 --pg_user pgvector --pg_password pgvector --pg_dbname postgres
 ```
 
