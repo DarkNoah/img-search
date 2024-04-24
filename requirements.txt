@@ -1,0 +1,9 @@
+psycopg[binary,pool]
+fastapi
+uvicorn
+pgvector
+timm
+numpy
+opencv-python
+facenet-pytorch
+ultralytics
